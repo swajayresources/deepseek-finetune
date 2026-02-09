@@ -1,191 +1,128 @@
 """
-Training script for DeepSeek finetuning with DeepSpeed support.
+DeepSeek-Coder 1.3B - Full Fine-Tuning with DeepSpeed ZeRO-2
+Production-grade training script
 """
-
-import os
-import json
-import argparse
-from dataclasses import dataclass, field
-from typing import Optional
 
 import torch
 from transformers import (
-    AutoModelForCausalLM,
     AutoTokenizer,
-    TrainingArguments,
+    AutoModelForCausalLM,
     Trainer,
+    TrainingArguments,
     DataCollatorForLanguageModeling,
 )
-from datasets import load_dataset
+from datasets import load_from_disk
 
+MODEL_NAME = "deepseek-ai/deepseek-coder-1.3b-base"
 
-@dataclass
-class ModelArguments:
-    """Arguments for model configuration."""
-    model_name_or_path: str = field(
-        metadata={"help": "Path to pretrained model or model identifier from huggingface.co/models"}
-    )
-    cache_dir: Optional[str] = field(
-        default=None,
-        metadata={"help": "Where to store pretrained models downloaded from huggingface.co"}
-    )
+print("="*80)
+print("DeepSeek-Coder 1.3B Fine-Tuning")
+print("="*80)
 
+# Load tokenizer
+print("\n[1/5] Loading tokenizer...")
+tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
+tokenizer.pad_token = tokenizer.eos_token  # CRITICAL FIX
 
-@dataclass
-class DataArguments:
-    """Arguments for data configuration."""
-    data_path: str = field(
-        metadata={"help": "Path to the training data (JSON file)"}
-    )
-    max_seq_length: int = field(
-        default=2048,
-        metadata={"help": "Maximum sequence length"}
-    )
+# Load model
+print("[2/5] Loading model...")
+model = AutoModelForCausalLM.from_pretrained(
+    MODEL_NAME,
+    torch_dtype=torch.bfloat16
+)
 
+print(f"  Model parameters: {model.num_parameters() / 1e9:.2f}B")
 
-def preprocess_function(examples, tokenizer, max_length):
-    """Tokenize and prepare the dataset."""
-    # Combine instruction and output if available
-    if "instruction" in examples:
-        texts = []
-        for inst, inp, out in zip(examples["instruction"], examples.get("input", [""] * len(examples["instruction"])), examples["output"]):
-            if inp:
-                text = f"Instruction: {inst}\nInput: {inp}\nOutput: {out}"
-            else:
-                text = f"Instruction: {inst}\nOutput: {out}"
-            texts.append(text)
-    else:
-        texts = examples["text"]
+# Load dataset
+print("[3/5] Loading tokenized dataset...")
+dataset = load_from_disk("data/tokenized")
+print(f"  Train samples: {len(dataset['train'])}")
 
-    # Tokenize
-    tokenized = tokenizer(
-        texts,
-        truncation=True,
-        max_length=max_length,
-        padding="max_length",
-        return_tensors="pt"
-    )
+# Data collator
+data_collator = DataCollatorForLanguageModeling(
+    tokenizer=tokenizer,
+    mlm=False
+)
 
-    # For causal LM, labels are the same as input_ids
-    tokenized["labels"] = tokenized["input_ids"].clone()
+# Training arguments
+print("[4/5] Configuring training...")
+training_args = TrainingArguments(
+    output_dir="checkpoints",
+    overwrite_output_dir=True,
 
-    return tokenized
+    # Training
+    num_train_epochs=1,
+    per_device_train_batch_size=1,
+    gradient_accumulation_steps=8,
 
+    # Optimizer (HF is source of truth)
+    learning_rate=2e-5,
+    adam_beta1=0.9,
+    adam_beta2=0.95,  # DeepSeek-specific
+    weight_decay=0.1,
 
-def main():
-    parser = argparse.ArgumentParser()
+    # Scheduler
+    lr_scheduler_type="cosine",
+    warmup_ratio=0.05,
 
-    # Model arguments
-    parser.add_argument("--model_name_or_path", type=str, required=True)
-    parser.add_argument("--cache_dir", type=str, default=None)
+    # Logging
+    logging_steps=50,
+    logging_dir="logs",
+    report_to="none",  # Change to "wandb" if you want W&B
 
-    # Data arguments
-    parser.add_argument("--data_path", type=str, required=True)
-    parser.add_argument("--max_seq_length", type=int, default=2048)
+    # Checkpointing (SAFE for 132GB disk)
+    save_strategy="steps",
+    save_steps=10000,
+    save_total_limit=2,
+    save_only_model=True,
 
-    # Training arguments
-    parser.add_argument("--output_dir", type=str, required=True)
-    parser.add_argument("--num_train_epochs", type=int, default=3)
-    parser.add_argument("--per_device_train_batch_size", type=int, default=4)
-    parser.add_argument("--per_device_eval_batch_size", type=int, default=4)
-    parser.add_argument("--gradient_accumulation_steps", type=int, default=4)
-    parser.add_argument("--learning_rate", type=float, default=2e-5)
-    parser.add_argument("--weight_decay", type=float, default=0.01)
-    parser.add_argument("--warmup_ratio", type=float, default=0.03)
-    parser.add_argument("--lr_scheduler_type", type=str, default="cosine")
-    parser.add_argument("--logging_steps", type=int, default=10)
-    parser.add_argument("--save_steps", type=int, default=500)
-    parser.add_argument("--save_total_limit", type=int, default=3)
-    parser.add_argument("--evaluation_strategy", type=str, default="steps")
-    parser.add_argument("--eval_steps", type=int, default=100)
-    parser.add_argument("--fp16", type=bool, default=True)
-    parser.add_argument("--deepspeed", type=str, default=None)
-    parser.add_argument("--report_to", type=str, default="wandb")
-    parser.add_argument("--local_rank", type=int, default=-1)
+    # Memory & Precision
+    bf16=True,
+    gradient_checkpointing=False,
+    
+    # DeepSpeed
+    deepspeed="configs/ds_zero2.json",
+    
+    # Infrastructure
+    remove_unused_columns=False,
+    dataloader_num_workers=4,
+    dataloader_pin_memory=True,
+    
+    # Stability
+    max_grad_norm=1.0,
+    seed=42,
+)
 
-    args = parser.parse_args()
+# Initialize trainer
+print("[5/5] Initializing trainer...")
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=dataset["train"],
+    data_collator=data_collator,
+)
 
-    # Load tokenizer and model
-    print(f"Loading tokenizer and model from {args.model_name_or_path}...")
-    tokenizer = AutoTokenizer.from_pretrained(
-        args.model_name_or_path,
-        cache_dir=args.cache_dir,
-        trust_remote_code=True
-    )
+# Disk space check
+import shutil
+disk = shutil.disk_usage(".")
+free_gb = disk.free / (1024**3)
+print(f"\n✓ Disk space: {free_gb:.1f} GB available")
+if free_gb < 50:
+    print(f"⚠️  WARNING: Only {free_gb:.1f}GB free (recommend 50GB+)")
 
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+# Start training
+print("\n" + "="*80)
+print("STARTING TRAINING")
+print("="*80)
+print(f"Total steps: ~{len(dataset['train']) // (training_args.per_device_train_batch_size * training_args.gradient_accumulation_steps)}")
+print(f"Checkpoints: Every {training_args.save_steps} steps")
+print("="*80 + "\n")
 
-    model = AutoModelForCausalLM.from_pretrained(
-        args.model_name_or_path,
-        cache_dir=args.cache_dir,
-        trust_remote_code=True,
-        torch_dtype=torch.float16 if args.fp16 else torch.float32
-    )
+trainer.train()
 
-    # Load dataset
-    print(f"Loading dataset from {args.data_path}...")
-    dataset = load_dataset("json", data_files=args.data_path, split="train")
-
-    # Preprocess dataset
-    print("Tokenizing dataset...")
-    tokenized_dataset = dataset.map(
-        lambda x: preprocess_function(x, tokenizer, args.max_seq_length),
-        batched=True,
-        remove_columns=dataset.column_names
-    )
-
-    # Split into train and eval
-    split_dataset = tokenized_dataset.train_test_split(test_size=0.1)
-
-    # Training arguments
-    training_args = TrainingArguments(
-        output_dir=args.output_dir,
-        num_train_epochs=args.num_train_epochs,
-        per_device_train_batch_size=args.per_device_train_batch_size,
-        per_device_eval_batch_size=args.per_device_eval_batch_size,
-        gradient_accumulation_steps=args.gradient_accumulation_steps,
-        learning_rate=args.learning_rate,
-        weight_decay=args.weight_decay,
-        warmup_ratio=args.warmup_ratio,
-        lr_scheduler_type=args.lr_scheduler_type,
-        logging_steps=args.logging_steps,
-        save_steps=args.save_steps,
-        save_total_limit=args.save_total_limit,
-        evaluation_strategy=args.evaluation_strategy,
-        eval_steps=args.eval_steps,
-        fp16=args.fp16,
-        deepspeed=args.deepspeed,
-        report_to=args.report_to,
-        load_best_model_at_end=True,
-    )
-
-    # Data collator
-    data_collator = DataCollatorForLanguageModeling(
-        tokenizer=tokenizer,
-        mlm=False
-    )
-
-    # Initialize Trainer
-    trainer = Trainer(
-        model=model,
-        args=training_args,
-        train_dataset=split_dataset["train"],
-        eval_dataset=split_dataset["test"],
-        data_collator=data_collator,
-    )
-
-    # Train
-    print("Starting training...")
-    trainer.train()
-
-    # Save final model
-    print(f"Saving final model to {args.output_dir}...")
-    trainer.save_model()
-    tokenizer.save_pretrained(args.output_dir)
-
-    print("Training complete!")
-
-
-if __name__ == "__main__":
-    main()
+# Save final model
+print("\n" + "="*80)
+print("TRAINING COMPLETE")
+print("="*80)
+trainer.save_model("checkpoints/final")
+print("\n✓ Model saved to: checkpoints/final")
