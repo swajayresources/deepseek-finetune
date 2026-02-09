@@ -17,21 +17,21 @@ echo ""
 echo "[2/4] Installing NumPy 1.26.4..."
 pip install numpy==1.26.4
 
-# Install required packages
+# Install required packages (UPDATED VERSIONS for Python 3.12)
 echo ""
 echo "[3/4] Installing dependencies..."
 pip install \
-  torch==2.1.2 \
-  transformers==4.39.3 \
-  datasets==2.18.0 \
-  deepspeed==0.13.1 \
-  accelerate==0.27.2 \
+  torch==2.4.0 \
+  transformers==4.44.0 \
+  datasets==2.20.0 \
+  deepspeed==0.15.0 \
+  accelerate==0.34.0 \
   sentencepiece \
   tiktoken \
   evaluate \
   wandb
 
-# Verify NumPy version
+# Verify installations
 echo ""
 echo "[4/4] Verifying installation..."
 python3 -c "import numpy; print(f'NumPy: {numpy.__version__}')"
@@ -43,6 +43,6 @@ echo ""
 echo "✓ Environment setup complete!"
 echo ""
 echo "Next steps:"
-echo "  1. Download dataset: huggingface-cli download code_search_net --repo-type dataset"
+echo "  1. Download dataset: huggingface-cli download code_search_net python --repo-type dataset --local-dir data/csn_python"
 echo "  2. Run preprocessing: python scripts/preprocess.py"
-echo "  3. Start training: deepspeed --num_gpus=1 scripts/train.py"
+echo "  3. Start training: bash launch_training.sh"
