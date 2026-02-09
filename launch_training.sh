@@ -1,41 +1,124 @@
 #!/bin/bash
+# Launch Training with Safety Checks
 
-# DeepSeek Training Launch Script
+set -e
 
-# Activate virtual environment
-source venv/bin/activate
+echo "=================================================="
+echo "DeepSeek-Coder 1.3B - Training Launch"
+echo "=================================================="
+
+# Check disk space
+echo ""
+echo "[1/5] Checking disk space..."
+FREE_GB=$(df -BG . | tail -1 | awk '{print $4}' | sed 's/G//')
+echo "  Available: ${FREE_GB}GB"
+
+if [ "$FREE_GB" -lt 50 ]; then
+    echo "  ⚠️  WARNING: Less than 50GB free!"
+fi
+
+# Check GPU
+echo ""
+echo "[2/5] Checking GPU..."
+nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+
+# Check files exist
+echo ""
+echo "[3/5] Checking required files..."
+for file in "configs/ds_zero2.json" "scripts/train.py" "data/tokenized"; do
+    if [ ! -e "$file" ]; then
+        echo "  ✗ Missing: $file"
+        exit 1
+    fi
+done
+echo "  ✓ All files present"
 
 # Set environment variables
-export CUDA_VISIBLE_DEVICES=0,1,2,3
-export WANDB_PROJECT="deepseek-finetune"
+echo ""
+echo "[4/5] Setting environment variables..."
+export DEEPSPEED_DISABLE_MPI=1
+export DS_ACCELERATOR=cuda
+export CUDA_VISIBLE_DEVICES=0
+export TOKENIZERS_PARALLELISM=false
 
-# Training parameters
-NUM_GPUS=4
-MASTER_PORT=29500
+echo "  DEEPSPEED_DISABLE_MPI=1"
+echo "  CUDA_VISIBLE_DEVICES=0"
 
-# Launch distributed training with DeepSpeed
-deepspeed --num_gpus=$NUM_GPUS \
-    --master_port=$MASTER_PORT \
-    scripts/train.py \
-    --deepspeed configs/ds_zero2.json \
-    --model_name_or_path deepseek-ai/deepseek-coder-1.3b-base \
-    --data_path data/train.json \
-    --output_dir outputs/ \
-    --num_train_epochs 3 \
-    --per_device_train_batch_size 4 \
-    --per_device_eval_batch_size 4 \
-    --gradient_accumulation_steps 4 \
-    --evaluation_strategy "steps" \
-    --eval_steps 100 \
-    --save_strategy "steps" \
-    --save_steps 500 \
-    --save_total_limit 3 \
-    --learning_rate 2e-5 \
-    --weight_decay 0.01 \
-    --warmup_ratio 0.03 \
-    --lr_scheduler_type "cosine" \
-    --logging_steps 10 \
-    --fp16 True \
-    --report_to wandb
+# Launch training
+echo ""
+echo "[5/5] Launching training..."
+echo "=================================================="
+echo ""
 
-echo "Training complete!"
+deepspeed --num_gpus=1 scripts/train.py
+
+echo ""
+echo "=================================================="
+echo "Training completed!"
+echo "=================================================="
+```
+
+---
+
+## 📄 6. `.gitignore`
+```
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+
+# Data (too large for git)
+data/
+*.jsonl
+*.arrow
+*.parquet
+
+# Model checkpoints (too large for git)
+checkpoints/
+*.bin
+*.safetensors
+*.pt
+*.pth
+
+# Logs
+logs/
+*.log
+wandb/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+temp/
+tmp/
