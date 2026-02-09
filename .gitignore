@@ -22,14 +22,25 @@ wheels/
 
 # Virtual environments
 venv/
-env/
 ENV/
-.venv
+env/
 
-# Training artifacts
+# Data (too large for git)
+data/
+*.jsonl
+*.arrow
+*.parquet
+
+# Model checkpoints (too large for git)
 checkpoints/
+*.bin
+*.safetensors
+*.pt
+*.pth
+
+# Logs
 logs/
-outputs/
+*.log
 wandb/
 
 # IDE
@@ -42,3 +53,8 @@ wandb/
 # OS
 .DS_Store
 Thumbs.db
+
+# Temporary files
+*.tmp
+temp/
+tmp/
